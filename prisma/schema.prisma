@@ -1,0 +1,511 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["public", "admin"]
+}
+
+enum UserRole {
+  STUDENT
+  PROFESSOR
+  @@schema("public")
+}
+
+enum AdminRole {
+  ADMIN
+  SUPER_ADMIN
+  @@schema("admin")
+}
+
+// NextAuth tables
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@schema("public")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@schema("public")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@schema("public")
+}
+
+// Our main user model
+model User {
+  id          String   @id @default(cuid())
+  username    String   @unique
+  email       String   @unique
+  password    String   // bcrypt hashed
+  name        String
+  phone       String   @unique // We collect but don't use for login
+  secondPhone String?  // Secondary phone number
+  role        UserRole @default(STUDENT)
+  
+  // Profile
+  avatar      String?
+  verified    Boolean  @default(false)
+  
+  // NextAuth relations
+  accounts    Account[]
+  sessions    Session[]
+  
+  // Course relations
+  createdCourses    Course[]         @relation("CourseCreator")
+  enrollments       Enrollment[]
+  orders            Order[]
+  
+  // Progress tracking
+  studentProgress   StudentProgress[]
+  lessonProgress    LessonProgress[]
+  
+  // Coupon usage
+  couponUsage       CouponUsage[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@schema("public")
+}
+
+// Enhanced course models with all requested features
+model Course {
+  id            String         @id @default(cuid())
+  slug          String         @unique
+  title         String
+  description   String         @db.Text
+  price         Decimal        @db.Decimal(10,2)
+  thumbnail     String?        // Bunny CDN thumbnail URL
+  coverImage    String?        // Additional cover image
+  
+  // Course metadata
+  difficulty    CourseDifficulty @default(BEGINNER)
+  duration      Int?           // Total course duration in minutes
+  language      String         @default("en")
+  
+  // Status
+  published     Boolean        @default(false)
+  featured      Boolean        @default(false)
+  isFree        Boolean        @default(false)
+  
+  // Relations
+  creatorId     String
+  creator       User           @relation("CourseCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  
+  categoryId    String
+  category      Category       @relation(fields: [categoryId], references: [id])
+  
+  lessons       Lesson[]
+  enrollments   Enrollment[]
+  assets        Asset[]
+  coupons       CourseCoupon[]
+  progress      StudentProgress[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([categoryId])
+  @@index([creatorId])
+  @@index([published])
+  @@schema("public")
+}
+
+model Category {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  icon        String?  // Icon name or URL
+  color       String?  // Hex color for UI
+  
+  courses     Course[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@schema("public")
+}
+
+enum CourseDifficulty {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  EXPERT
+  @@schema("public")
+}
+
+model Lesson {
+  id          String      @id @default(cuid())
+  title       String
+  description String?     @db.Text
+  videoUrl    String?     // Bunny CDN video URL
+  videoDuration Int?      // Video duration in seconds
+  order       Int
+  freePreview Boolean     @default(false)
+  
+  // Lesson control - admin configurable
+  isRequired  Boolean     @default(true)  // Can this lesson be skipped?
+  canSkip     Boolean     @default(false) // Alternative field name
+  
+  // Lesson metadata
+  thumbnail   String?     // Lesson thumbnail
+  transcript  String?     @db.Text // Video transcript
+  
+  courseId    String
+  course      Course      @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  
+  // Relations
+  lessonAssets LessonAsset[]
+  progress     LessonProgress[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([courseId])
+  @@index([order])
+  @@schema("public")
+}
+
+model LessonAsset {
+  id       String    @id @default(cuid())
+  name     String
+  url      String    // Bunny CDN URL
+  type     AssetType
+  size     Int       // bytes
+  mimeType String
+  order    Int       @default(0)
+  
+  lessonId String
+  lesson   Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+
+  @@index([lessonId])
+  @@schema("public")
+}
+
+model Asset {
+  id       String    @id @default(cuid())
+  name     String
+  url      String    // Bunny CDN URL
+  type     AssetType
+  size     Int       // bytes
+  mimeType String
+  description String?
+  
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+
+  @@index([courseId])
+  @@schema("public")
+}
+
+enum AssetType {
+  VIDEO
+  PDF
+  IMAGE
+  DOCUMENT
+  AUDIO
+  ARCHIVE
+  @@schema("public")
+}
+
+// Enhanced enrollment with progress tracking
+model Enrollment {
+  id        String           @id @default(cuid())
+  status    EnrollmentStatus @default(ACTIVE)
+  progress  Float            @default(0.0) // Overall course progress 0-100
+  
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  
+  // Coupon tracking
+  appliedCouponId String?
+  appliedCoupon   Coupon? @relation(fields: [appliedCouponId], references: [id])
+  
+  enrolledAt DateTime @default(now())
+  expiresAt  DateTime?
+  completedAt DateTime? // When course was completed
+
+  @@unique([userId, courseId])
+  @@index([userId])
+  @@index([courseId])
+  @@schema("public")
+}
+
+// Student progress tracking for courses
+model StudentProgress {
+  id               String   @id @default(cuid())
+  totalWatchTime   Int      @default(0) // Total seconds watched across all lessons
+  completionRate   Float    @default(0.0) // Percentage 0-100
+  lastAccessedAt   DateTime @default(now())
+  
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  
+  // Individual lesson progress
+  lessonProgress LessonProgress[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, courseId])
+  @@index([userId])
+  @@index([courseId])
+  @@schema("public")
+}
+
+// Individual lesson progress tracking
+model LessonProgress {
+  id             String   @id @default(cuid())
+  watchTime      Int      @default(0) // Seconds watched
+  completed      Boolean  @default(false)
+  completedAt    DateTime?
+  lastPosition   Int      @default(0) // Last watched position in seconds
+  
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  lessonId String
+  lesson   Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  
+  // Link to overall course progress
+  studentProgressId String
+  studentProgress   StudentProgress @relation(fields: [studentProgressId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, lessonId])
+  @@index([userId])
+  @@index([lessonId])
+  @@schema("public")
+}
+
+// Coupon system - Global and Course-specific
+model Coupon {
+  id              String       @id @default(cuid())
+  code            String       @unique
+  name            String       // Display name
+  description     String?
+  
+  // Discount configuration
+  discountType    DiscountType @default(PERCENTAGE)
+  discountValue   Decimal      @db.Decimal(10,2) // Percentage (0-100) or fixed amount
+  
+  // Usage limits
+  maxUses         Int?         // null = unlimited
+  usedCount       Int          @default(0)
+  maxUsesPerUser  Int?         // Per user limit
+  
+  // Validity
+  validFrom       DateTime     @default(now())
+  validUntil      DateTime?
+  isActive        Boolean      @default(true)
+  
+  // Scope - if null, it's global
+  isGlobal        Boolean      @default(false)
+  
+  // Relations
+  courseCoupons   CourseCoupon[]
+  enrollments     Enrollment[] // Track which enrollments used this coupon
+  couponUsage     CouponUsage[]
+  
+  // Admin tracking
+  createdById     String       // Admin who created this
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([code])
+  @@index([isActive])
+  @@index([validFrom, validUntil])
+  @@schema("public")
+}
+
+// Junction table for course-specific coupons
+model CourseCoupon {
+  id       String @id @default(cuid())
+  
+  couponId String
+  coupon   Coupon @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  
+  courseId String
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  
+  createdAt DateTime @default(now())
+
+  @@unique([couponId, courseId])
+  @@index([couponId])
+  @@index([courseId])
+  @@schema("public")
+}
+
+// Track coupon usage by users
+model CouponUsage {
+  id       String @id @default(cuid())
+  
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  couponId String
+  coupon   Coupon @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  
+  courseId String? // Which course this was used for
+  
+  discountAmount Decimal @db.Decimal(10,2) // Actual discount applied
+  
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([couponId])
+  @@schema("public")
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  EXPIRED
+  REFUNDED
+  @@schema("public")
+}
+
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  @@schema("public")
+}
+
+model Order {
+  id       String      @id @default(cuid())
+  total    Decimal     @db.Decimal(10,2)
+  currency String      @default("EGP")
+  status   OrderStatus @default(PENDING)
+  
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+  
+  payments Payment[]
+  items    OrderItem[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@schema("public")
+}
+
+model OrderItem {
+  id       String  @id @default(cuid())
+  price    Decimal @db.Decimal(10,2)
+  
+  orderId  String
+  order    Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  
+  courseId String
+  
+  @@schema("public")
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  @@schema("public")
+}
+
+model Payment {
+  id            String        @id @default(cuid())
+  amount        Decimal       @db.Decimal(10,2)
+  method        PaymentMethod
+  status        PaymentStatus @default(PENDING)
+  providerId    String?       // Paymob transaction ID
+  providerData  Json?         // Store webhook data
+  
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id])
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@schema("public")
+}
+
+enum PaymentMethod {
+  CARD
+  WALLET
+  @@schema("public")
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+  @@schema("public")
+}
+
+// Admin schema for separated admin users
+model AdminUser {
+  id       String    @id @default(cuid())
+  username String    @unique
+  email    String    @unique
+  password String    // bcrypt hashed
+  name     String
+  role     AdminRole @default(ADMIN)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@schema("admin")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  action     String   // CREATE_COURSE, UPDATE_USER, etc
+  actorId    String   // Admin user ID
+  actorType  String   // ADMIN
+  resourceId String?  // The affected resource
+  resourceType String? // USER, COURSE, etc
+  metadata   Json?    // Additional data
+  
+  createdAt DateTime @default(now())
+
+  @@schema("admin")
+}

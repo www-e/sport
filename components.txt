@@ -1,0 +1,5 @@
+1- animated theme switch
+2- sidebar
+3- glowing effect on cards edges (glowing effect)
+4- openable cards (use-outside-click)
+5- navbar
